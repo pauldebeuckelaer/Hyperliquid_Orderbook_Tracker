@@ -6,7 +6,7 @@ from config import LARGE_TRADE_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
-
+# noinspection PyAttributeOutsideInit
 class CoinAggregator:
     """Aggregates trades and book updates for a single coin."""
 
@@ -14,6 +14,7 @@ class CoinAggregator:
         self.coin = coin
         self.whale_addresses = whale_addresses
         self.large_threshold = LARGE_TRADE_THRESHOLD.get(coin, 1000)
+        self._prints: list[tuple] = []  # raw tape, drained by main.flush_tape
         self.reset()
 
     def reset(self):
@@ -39,40 +40,6 @@ class CoinAggregator:
         self._imbalance_sum = 0.0
         self.book_updates = 0
 
-    def process_trade(self, trade: dict):
-        """Process a single trade from the websocket."""
-        try:
-            size = float(trade["sz"])
-            side = trade["side"]  # "B" or "A"
-            buyer = trade["users"][0].lower()
-            seller = trade["users"][1].lower()
-
-            self.num_trades += 1
-            self.total_volume += size
-
-            # Aggressor flow: side "B" means buyer is aggressor (market buy)
-            if side == "B":
-                self.buy_aggressor_vol += size
-            else:
-                self.sell_aggressor_vol += size
-
-            # Whale detection
-            is_whale_buyer = buyer in self.whale_addresses
-            is_whale_seller = seller in self.whale_addresses
-
-            if is_whale_buyer:
-                self.whale_buy_vol += size
-                self.whale_trade_count += 1
-            if is_whale_seller:
-                self.whale_sell_vol += size
-                self.whale_trade_count += 1
-
-            # Large trade detection
-            if size >= self.large_threshold:
-                self.large_trade_count += 1
-
-        except (KeyError, ValueError, IndexError) as e:
-            logger.debug(f"Skipping malformed trade: {e}")
 
     def process_book(self, book_data: dict):
         """Process an L2 book update from the websocket."""
@@ -101,6 +68,51 @@ class CoinAggregator:
 
         except (KeyError, ValueError, IndexError) as e:
             logger.debug(f"Skipping malformed book update: {e}")
+
+    def process_trade(self, trade: dict):
+        """Process a single trade from the websocket."""
+        try:
+            size = float(trade["sz"])
+            px = float(trade["px"])
+            side = trade["side"]  # "B" or "A"
+            buyer = trade["users"][0].lower()
+            seller = trade["users"][1].lower()
+            tid = int(trade["tid"])
+            ts = int(trade["time"])
+            raw_hash = bytes.fromhex(trade["hash"][2:])
+            order_id = raw_hash if any(raw_hash) else None  # all-zero -> NULL
+
+            self.num_trades += 1
+            self.total_volume += size
+
+            # Aggressor flow: side "B" means buyer is aggressor (market buy)
+            if side == "B":
+                self.buy_aggressor_vol += size
+            else:
+                self.sell_aggressor_vol += size
+
+            # Whale detection
+            is_whale_buyer = buyer in self.whale_addresses
+            is_whale_seller = seller in self.whale_addresses
+
+            if is_whale_buyer:
+                self.whale_buy_vol += size
+                self.whale_trade_count += 1
+            if is_whale_seller:
+                self.whale_sell_vol += size
+                self.whale_trade_count += 1
+
+            # Large trade detection
+            if size >= self.large_threshold:
+                self.large_trade_count += 1
+
+            # Raw tape (drained on its own cadence by main.flush_tape)
+            self._prints.append(
+                (tid, ts, self.coin, px, size, px * size, side, buyer, seller, order_id)
+            )
+
+        except (KeyError, ValueError, IndexError) as e:
+            logger.debug(f"Skipping malformed trade: {e}")
 
     def flush(self) -> dict:
         """Produce a summary dict and reset state."""
@@ -133,3 +145,9 @@ class CoinAggregator:
 
         self.reset()
         return snapshot
+
+    def drain_prints(self) -> list[tuple]:
+        """Hand the buffered tape to the writer and start a fresh buffer."""
+        out = self._prints
+        self._prints = []
+        return out

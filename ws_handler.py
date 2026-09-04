@@ -1,4 +1,5 @@
 """Websocket handler - connects to Hyperliquid, manages subscriptions and reconnection."""
+import time
 
 import json
 import logging
@@ -6,7 +7,7 @@ import asyncio
 import websockets
 from config import WS_URI, COINS, RECONNECT_DELAY_INITIAL, RECONNECT_DELAY_MAX
 from aggregator import CoinAggregator
-
+from storage import record_gap
 logger = logging.getLogger(__name__)
 
 
@@ -17,6 +18,8 @@ class HyperliquidWS:
         self.aggregators = aggregators
         self.ws = None
         self._running = False
+        self._last_msg_ms: int | None = None  # for gap start
+        self._gap_reason: str | None = None  # set on drop, cleared on resubscribe
 
     async def _subscribe(self):
         """Subscribe to trades and l2Book for all configured coins."""
@@ -37,6 +40,7 @@ class HyperliquidWS:
 
     async def _handle_message(self, raw: str):
         """Route incoming message to the appropriate aggregator."""
+        self._last_msg_ms = int(time.time() * 1000)
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
@@ -70,7 +74,14 @@ class HyperliquidWS:
 
                     await self._subscribe()
 
+                    if self._gap_reason is not None and self._last_msg_ms is not None:
+                        record_gap(self._last_msg_ms, int(time.time() * 1000),
+                                   COINS, self._gap_reason)
+                    self._gap_reason = None
+
                     async for raw in ws:
+                        if not self._running:
+                            break
                         await self._handle_message(raw)
 
             except websockets.ConnectionClosed as e:
