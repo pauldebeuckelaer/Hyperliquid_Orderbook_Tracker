@@ -97,18 +97,19 @@ def load_whale_addresses():
         return set()
 
 
-def _ensure_address_ids(conn, addresses: set[str]) -> None:
-    """Assign dictionary ids to any address not yet in the cache."""
+def _ensure_address_ids(conn, addresses: set[str]) -> dict[str, int]:
+    """Insert any address not yet cached and return {address: id} for those.
+    Does NOT touch _addr_ids: the caller merges after a successful commit,
+    so a rolled-back transaction can never leave stale ids in the cache."""
     missing = [a for a in addresses if a not in _addr_ids]
     if not missing:
-        return
+        return {}
     conn.executemany("INSERT OR IGNORE INTO tape_addresses (address) VALUES (?)",
                      [(a,) for a in missing])
     placeholders = ",".join("?" * len(missing))
-    for id_, addr in conn.execute(
-            f"SELECT id, address FROM tape_addresses WHERE address IN ({placeholders})", missing
-    ):
-        _addr_ids[addr] = id_
+    return {addr: id_ for id_, addr in conn.execute(
+        f"SELECT id, address FROM tape_addresses WHERE address IN ({placeholders})", missing
+    )}
 
 
 def write_prints(prints: list[tuple]) -> int:
@@ -122,10 +123,11 @@ def write_prints(prints: list[tuple]) -> int:
         return 0
     conn = sqlite3.connect(DB_PATH, timeout=10)
     try:
-        _ensure_address_ids(conn, {p[7] for p in prints} | {p[8] for p in prints})
+        new_ids = _ensure_address_ids(conn, {p[7] for p in prints} | {p[8] for p in prints})
+        ids = {**_addr_ids, **new_ids}
         rows = [
             (tid, ts, coin, px, sz, notional, side,
-             _addr_ids[buyer], _addr_ids[seller], order_id)
+             ids[buyer], ids[seller], order_id)
             for tid, ts, coin, px, sz, notional, side, buyer, seller, order_id in prints
         ]
         before = conn.total_changes
@@ -136,6 +138,7 @@ def write_prints(prints: list[tuple]) -> int:
         """, rows)
         inserted = conn.total_changes - before
         conn.commit()
+        _addr_ids.update(new_ids)   # only after the commit succeeded
         return inserted
     except Exception as e:
         logger.error(f"Failed to write {len(prints)} prints: {e}")

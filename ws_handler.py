@@ -84,9 +84,12 @@ class HyperliquidWS:
                             break
                         await self._handle_message(raw)
 
+
             except websockets.ConnectionClosed as e:
+                self._gap_reason = f"closed: {e}"[:120]
                 logger.warning(f"Connection closed: {e}. Reconnecting in {delay}s...")
             except Exception as e:
+                self._gap_reason = f"error: {type(e).__name__}: {e}"[:120]
                 logger.error(f"Websocket error: {e}. Reconnecting in {delay}s...")
 
             if self._running:
