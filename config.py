@@ -7,7 +7,7 @@ import platform
 WS_URI = "wss://api.hyperliquid.xyz/ws"
 
 # Coins to track
-COINS = ["HYPE", "BTC", "ETH", "ZEC", "SOL", "XRP", "PUMP", "FARTCOIN"]
+COINS = ["HYPE", "BTC", "ETH", "ZEC", "SOL", "XRP", "PUMP", "FARTCOIN", "xyz:BRENTOIL"]
 
 # Database - same twap.db as your TWAP tracker
 if platform.system() == "Windows":
@@ -32,6 +32,7 @@ LARGE_TRADE_THRESHOLD = {
     "XRP": 37000,
     "PUMP": 13500000,
     "FARTCOIN": 355000,
+    "xyz:BRENTOIL": 500,
 }
 
 # Reconnect settings
